@@ -209,5 +209,23 @@ The article's method for separating "cold" (first access, has to hit disk) from 
 Postgres-specific: setting a table's fillfactor=70 (vs the default 100) leaves free space in each page so an UPDATE that doesn't touch an indexed column can happen as a cheap "heap-only tuple" (HOT) update, skipping index maintenance entirely. The article calls this possibly the highest-leverage tuning knob in the whole study, because our touch() operation — bumping last_accessed_at on every retrieval — is exactly the kind of update this either rescues or doesn't. We can't test it at all yet: it's a Postgres storage-engine mechanic with no equivalent in Chroma or NumpyReference, both of which already handle metadata updates cheaply with nothing analogous to page-level index churn to observe.
 
 
+##FIX — reflection importance was hardcoded, now dynamic
+do_insert() for reflections always passed a literal 7 as importance, never something the LLM produced. Compare to perceive(), where importance is genuinely LLM-assigned per observation via the RATING | TEXT format. The article's schema table describes importance generically as "LLM-assigned 1-10" for any memory type -- no carve-out for reflections. Park et al.'s actual design confirms this: every memory object (observation, reflection, or plan) gets its own importance/poignancy rating via the same LLM mechanism, applied uniformly -- there's no special case where reflections get a fixed value.
+
+Why it mattered beyond faithfulness: composite score = alpha*recency + beta*importance + gamma*relevance. With every reflection pinned at the same constant, the importance term contributed zero differentiating power whenever two reflections competed for a retrieval slot -- ranking among reflections collapsed to recency+relevance only.
+
+FIX: synthesis prompt now asks for a rating per insight, same shape as perceive() -- "RATING | <insight text> (because of N, M)" -- parsed with an updated regex, importance passed through to do_insert() instead of the literal 7.
+
+RESULT (re-ran golden_run.py + replay_chroma.py): 8/8 reflections parsed correctly with the new format (no compliance regression). Importance values actually varied this run: [8, 6, 8, 9, 8, 6, 9, 8] -- no longer flat. Pipeline re-verified end to end: 66 memories, 136 ops, replay recall@k'=1.000, composite agreement=1.000, n=35 searches.
+
+
+##ISSUE — trace.jsonl corrupted twice mid-session, external cause
+Twice, after confirming trace.jsonl parsed cleanly, a later read failed with a JSONDecodeError -- one JSON record had a literal line break inserted mid-object (e.g. cut off right after a comma, continuing as a new "line"). Confirmed via per-line json.loads() scan to locate the exact broken line each time.
+
+Ruled out our own code as the cause: log() in golden_run.py writes via json.dumps(rec, default=str) + "\n" -- json.dumps never emits a raw embedded newline inside its output, so a single write() call cannot produce this. Also, the file's line count grew between checks with no script of ours running in between (140 lines written by golden_run.py, later found at 165 lines) -- something external is appending to or resaving the file after we write it.
+
+Leading suspect: an editor with word-wrap-on-save touching the file while open, given the "search" records with a 20-item pool field produce very long single lines -- exactly the kind of line that triggers this failure mode in some editors/sync tools. Not fixed at the code level (nothing to fix there); resolved operationally each time by regenerating via golden_run.py and reading the data immediately in the same step. Worth checking: don't leave trace.jsonl open in an editor while a run is in progress or about to be read.
+
+
 
 

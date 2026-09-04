@@ -176,37 +176,40 @@ if the evidence still points the same way, find a more specific detail, a
 new angle, or how the situation has changed instead):
 {past_block}
 
-What 2 high-level insights can you infer? One per line.
+What 2 high-level insights can you infer? One per line, each rated 1-10 for
+importance (1 = trivial and obvious, 10 = a major realization that would
+change how they act).
 Rules:
-- Output ONLY the insight text followed by its citation — no leading label,
-  no word "insight" or "INSIGHT" anywhere in the line.
-- Format strictly as: <insight text> (because of N, M)
+- Format strictly as: RATING | <insight text> (because of N, M)
   where N, M are memory numbers from the list above.
+- Output ONLY that — no leading label, no word "insight" or "INSIGHT"
+  anywhere in the line.
 - Cite each memory number at most once per insight.
 Example of the expected shape (do not reuse this content):
-Teo is starting to trust Mira's judgment on ramp-rate settings (because of 2, 7)"""
+7 | Teo is starting to trust Mira's judgment on ramp-rate settings (because of 2, 7)"""
     insights_raw = chat(s_system, s_user)
 
     inserted = []
     for line in [l.strip() for l in insights_raw.strip().splitlines() if l.strip()]:
-        m = re.match(r"(.+?)\s*\(because of\s*([\d,\s]+)\)", line)
+        m = re.match(r"\s*(\d+)\s*\|\s*(.+?)\s*\(because of\s*([\d,\s]+)\)", line)
         if not m:
             continue
-        text = m.group(1).strip()
+        importance = int(m.group(1))
+        text = m.group(2).strip()
         text = re.sub(r"^insight\s*:?\s*", "", text, flags=re.IGNORECASE)  # defensive: strip a leading label even if the model still emits one
         if not text:
             continue
-        nums = [int(n.strip()) for n in m.group(2).split(",") if n.strip().isdigit()]
+        nums = [int(n.strip()) for n in m.group(3).split(",") if n.strip().isdigit()]
         derived_ids = list(dict.fromkeys(index_to_id[n] for n in nums if n in index_to_id))  # defensive: dedupe citations, preserve order
         if not derived_ids:
             continue  # drop insights whose citations don't resolve (article §04)
         vec = embed([text])[0]
         idx = register_vector(vec)
         mid = f"{agent_id}_refl_{tick_time.strftime('%H%M')}_{len(inserted)}"
-        do_insert(store, agent_id, mid, vec, idx, "reflection", 1, 7, tick_time, text, state, derived_ids)
+        do_insert(store, agent_id, mid, vec, idx, "reflection", 1, importance, tick_time, text, state, derived_ids)
         state[agent_id]["past_insights"].append(text)
         inserted.append(mid)
-        print(f"    [reflect] insight: \"{text}\" <- {derived_ids}")
+        print(f"    [reflect] insight [{importance}]: \"{text}\" <- {derived_ids}")
     return inserted
 
 
