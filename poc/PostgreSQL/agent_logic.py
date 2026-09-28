@@ -1,5 +1,6 @@
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import psycopg2
@@ -7,12 +8,16 @@ import threading
 import json
 from psycopg2.extras import execute_values
 from pgvector.psycopg2 import register_vector
+
 from queries import *
 import numpy as np
 import numpy.typing as npt
+import math
 
-from psycopg import cursor
+current_folder = Path(__file__).resolve().parent
+parent_folder = current_folder.parent
 
+VECTORS_PATH = parent_folder / "vectors.npy"
 
 def list_for_insertion(item, vector):
     return (
@@ -24,6 +29,7 @@ def list_for_insertion(item, vector):
         item["type"],
         item["importance"],
         item["created_at"],
+        item["created_at"], # last_accessed_at is the same as created for a new memory
         item.get("derived_from", []),
         item["text"],
         item.get("vec"),
@@ -57,135 +63,197 @@ def list_for_touch(item):
     )
 
 
+# NDGC (Normalised Discounted Cummulative Gain
+def ndgc_compute(entries: list[int], g_t: list[int]):
+    dgc = 0
+    idcg = 0
+    logging.debug(f"entries: {entries};\n ground truth:{g_t}")
+    for i, entry in enumerate(entries):
+        # find the entry position inside the g_t
+        dgc += (20.0 / (1 + g_t.index(entry))) / math.log(i + 2, 2) if entry in g_t else 0
+        idcg += (20.0 / (1 + i)) / math.log(i + 2, 2)
+    logging.debug(f"ndgc: {dgc / idcg}")
+    return dgc / idcg
+
+def overlap(entries, g_t):
+    sequences_retrieved = set(entry["id"] for entry in entries)
+    sequences_ground_truth = set(entry["id"] for entry in g_t["pool"])
+
+    # Calculate True Positives (overlap)
+    true_positives = len(sequences_retrieved.intersection(sequences_ground_truth))
+
+    # How many entries are in both lists
+    overlap_ration = true_positives / len(sequences_retrieved) if sequences_retrieved else 0.0
+
+    return overlap_ration
+
+# Precision @5
+def precision_5(entries, g_t):
+    top_5_ground_truth = set(entry["id"] for entry in entries[:5])
+    top_5_retrieved = set(entry["id"] for entry in g_t["pool"][:5])
+    correct_entries = len(top_5_ground_truth.intersection(top_5_retrieved))
+    precision_top_5 = correct_entries / 5.0
+
+    return precision_top_5
+
 class Agent(threading.Thread):
     # data generated is only the one that belongs to this agent
     def __init__(self, id_agent: int, data_generated):
         super().__init__()
+        self.cursor = None
+        self.connection = None
         self.id_agent = id_agent
         self.entries_list = data_generated
-        self.connection = psycopg2.connect(host="localhost", dbname="postgres", user="postgres", password="password")
-        self.cursor = self.connection.cursor()
         logging.info(f"Initialized with {len(self.entries_list)} operations to process.")
-        self.cum_insertion_time = 0
-        self.cum_modif_time = 0
-        self.cum_search_time = 0
+        # self.cum_insertion_time = 0
+        # self.cum_modif_time = 0
+        # self.cum_search_time = 0
+        self.insertion_times : np.ndarray[tuple[int]] = np.array([])
+        self.log_times: np.ndarray[tuple[int]] = np.array([])
+        self.modification_times : np.ndarray[tuple[int]] = np.array([])
+        self.search_times : np.ndarray[tuple[int]] = np.array([])
 
         # metrics for searching database
         self.total_searches = 0
-        self.cum_precision = 0.0
-        self.cum_recall = 0.0
+        self.cum_overlap = 0.0  # Replacing the redundant precision/recall
+        self.cum_ndcg = 0.0
+        self.cum_p_at_5 = 0.0
+        self.cum_mrr = 0.0
 
     def run(self):
-        vectors : npt.NDArray[np.float32] = np.load("../vectors.npy")
+        vectors : npt.NDArray[np.float32] = np.load(VECTORS_PATH)
         logging.info("Started processing operations.")
+        # start the connection in the run methods
+        self.connection = psycopg2.connect(host="localhost", dbname="postgres", user="postgres", password="password")
+        self.cursor = self.connection.cursor()
         try:
+            self.connection.autocommit = True
             register_vector(self.connection)
-            with self.connection:
-                with self.cursor:
-                    for memory in self.entries_list:
-                        seq = memory.get('seq')
-                        if memory["op"] == "insert":
-                            logging.debug(f"Executing INSERT for seq {seq}")
-                            # add them directly to the database
-                            insrt = list_for_insertion(memory, vectors[int(memory["vec"])].tolist())
-                            start = time.time_ns()
-                            execute_values(self.cursor, append_database_insert_operation, [insrt])
-                            self.cum_insertion_time += time.time_ns() - start
+            with self.cursor:
+                # setting this will do good to the combination of vector cosine and B-Tree
+                self.cursor.execute("SET hnsw.iterative_scan = relaxed_order;")
+                for memory in self.entries_list:
+                    seq = memory.get('seq')
+                    if memory["op"] == "insert":
+                        logging.debug(f"Executing INSERT for seq {seq}")
+                        # add them directly to the database
+                        insrt = list_for_insertion(memory, vectors[int(memory["vec"])].tolist())
+                        start = time.perf_counter_ns()
+                        execute_values(self.cursor, append_database_insert_operation, [insrt])
+                        self.insertion_times = np.append(self.insertion_times, time.perf_counter_ns() - start)
 
-                        elif memory["op"] == "search":
-                            logging.debug(f"Executing SEARCH for seq {seq}")
-                            insrt = list_for_search(memory)
-                            start = time.time_ns()
-                            execute_values(self.cursor, append_database_search_operation, [insrt])
-                            self.cum_insertion_time += time.time_ns() - start
-                            # get the vector of the trigger
-                            embedding_of_trigger = vectors[int(memory["qvec"])].tolist()
+                    elif memory["op"] == "search":
+                        logging.debug(f"Executing SEARCH for seq {seq}")
+                        insrt = list_for_search(memory)
+                        start = time.perf_counter_ns()
+                        execute_values(self.cursor, append_database_search_operation, [insrt])
+                        self.log_times = np.append(self.log_times, time.perf_counter_ns() - start)
+                        # get the vector of the trigger
+                        embedding_of_trigger = vectors[int(memory["qvec"])].tolist()
 
-                            query_fetch_based_on_cosine = """
-                                                SELECT id_operation, memory_text, 1 - (embedding <=> %s::vector) AS similarity
-                                                FROM traces
-                                                WHERE embedding is NOT NULL AND op = 'insert' AND agent = '%s'
-                                                ORDER BY embedding <=> %s::vector
-                                                LIMIT %s
-                            """
-                            start = time.time_ns()
-                            self.cursor.execute(query_fetch_based_on_cosine, (embedding_of_trigger,self.id_agent, embedding_of_trigger, int(memory["k_prime"])))
-                            self.cum_search_time += time.time_ns() - start
+                        start = time.perf_counter_ns()
+                        self.cursor.execute(query_fetch_based_on_cosine, (embedding_of_trigger, memory["agent"], embedding_of_trigger, int(memory["k_prime"])))
+                        self.search_times = np.append(self.search_times, time.perf_counter_ns() - start)
 
-                            raw_results: list[tuple[Any, ...]] = self.cursor.fetchall()
+                        raw_results: list[tuple[Any, ...]] = self.cursor.fetchall()
+                        formatted_results = []
+                        for row in raw_results:
+                            formatted_results.append({
+                                "id" : row[0],
+                                "text": row[1],
+                                "cosine": row[2]
+                                })
 
-                            formatted_results = []
-                            for row in raw_results:
-                                formatted_results.append({
-                                    "id" : row[0],
-                                    "text": row[1],
-                                    "cosine": row[2]
-                                    })
+                        overlap_ration = overlap(formatted_results, memory)
+                        self.cum_overlap += overlap_ration
 
-                            sequences_retrieved = set(entry["id"] for entry in formatted_results)
-                            sequences_ground_truth = set(entry["id"] for entry in memory["pool"])
+                        precision_top_5 = precision_5(formatted_results, memory)
+                        self.cum_p_at_5 += precision_top_5
 
-                            # Calculate True Positives (overlap)
-                            true_positives = len(sequences_retrieved.intersection(sequences_ground_truth))
 
-                            # Precision: (Correct Retrieved) / (Total Retrieved)
-                            precision = true_positives / len(sequences_retrieved) if sequences_retrieved else 0.0
+                        ndcg = ndgc_compute([entry["id"] for entry in formatted_results], [entry["id"] for entry in memory["pool"]])
 
-                            # Recall: (Correct Retrieved) / (Total Ground Truth)
-                            recall = true_positives / len(sequences_ground_truth) if sequences_ground_truth else 0.0
+                        self.cum_ndcg += ndcg
+                        # Update cumulative stats
+                        self.total_searches += 1
+                        logging.info(
+                            f"Search seq {seq} completed | "
+                            f"Retrieved: {len(set(entry["id"] for entry in formatted_results))}, Truth: {len(set(entry["id"] for entry in memory["pool"]))} | "
+                            f"Overlap: {overlap_ration:.2f}"
+                            f"Precision @5: {precision_top_5}"
+                            f"NDCG: {ndcg}"
+                        )
+                    elif memory["op"] == "touch":
+                        logging.debug(f"Executing TOUCH for seq {seq}")
+                        insrt = list_for_touch(memory)
+                        start = time.perf_counter_ns()
+                        execute_values(self.cursor, append_database_touch_operation, [insrt])
+                        self.log_times = np.append(self.log_times, time.perf_counter_ns() - start)
+                        # using the k most important ones, modify in database their timestamp (id index)
+                        # record metrics for the writing to database (compute metrics)
 
-                            # Update cumulative stats
-                            self.total_searches += 1
-                            self.cum_precision += precision
-                            self.cum_recall += recall
+                        # modify the entries in the ids to the timestamp of "at"
+                        query_modify_time = """
+                            UPDATE traces
+                            SET last_accessed_at = %s
+                            WHERE id_operation IN %s
+                        """
+                        # memory["ids"] = "ids": ["a1_t2_2", "a1_t1_1", "a1_t0_2", "a1_t1_3", "a1_seed_2"]
+                        ids_tuple = tuple(memory["ids"])
+                        start = time.perf_counter_ns()
+                        self.cursor.execute(query_modify_time, (memory["at"], ids_tuple))
+                        self.modification_times = np.append(self.modification_times, time.perf_counter_ns() - start)
 
-                            logging.info(
-                                f"Search seq {seq} completed | "
-                                f"Retrieved: {len(sequences_retrieved)}, Truth: {len(sequences_ground_truth)} | "
-                                f"Precision: {precision:.2f} - Recall: {recall:.2f}"
-                            )
-                        elif memory["op"] == "touch":
-                            logging.debug(f"Executing TOUCH for seq {seq}")
-                            insrt = list_for_touch(memory)
-                            start = time.time_ns()
-                            execute_values(self.cursor, append_database_touch_operation, [insrt])
-                            self.cum_insertion_time += time.time_ns() - start
-                            # using the k most important ones, modify in database their timestamp (id index)
-                            # record metrics for the writing to database (compute metrics)
+                    else:
+                        logging.warning(f"Skipping unknown operation: {memory['op']}")
+                        raise Exception("memory not permitted")
 
-                            # modify the entries in the ids to the timestamp of "at"
-                            query_modify_time = """
-                                UPDATE traces
-                                SET created_at = %s
-                                WHERE id_operation IN %s
-                            """
-                            # memory["ids"] = "ids": ["a1_t2_2", "a1_t1_1", "a1_t0_2", "a1_t1_3", "a1_seed_2"]
-                            ids_tuple = tuple(memory["ids"])
-                            start = time.time_ns()
-                            self.cursor.execute(query_modify_time, (memory["at"], ids_tuple))
-                            self.cum_modif_time += time.time_ns() - start
+                # Log final metrics for this agent
+                if self.total_searches > 0:
+                    avg_overlap = self.cum_overlap / self.total_searches
+                    avg_precision_5k = self.cum_p_at_5 / self.total_searches
+                    avg_ndcg = self.cum_ndcg / self.total_searches
+                    logging.info(f"--- AGENT {self.id_agent} FINAL METRICS ---")
+                    logging.info(f"Avg Overlap: {avg_overlap:.4f}")
+                    logging.info(f"Avg Precision 5K: {avg_precision_5k:.4f}")
+                    logging.info(f"Avg Normalized Discounted Cummulative Gain: {avg_ndcg:.4f}")
 
-                        else:
-                            logging.warning(f"Skipping unknown operation: {memory['op']}")
-                            raise Exception("memory not permitted")
+                    # print the p50, p95 and p99 of the insertion, search and modification times
+                    logging.info(f"--- AGENT {self.id_agent} TIMING METRICS ---")
 
-                    # Log final metrics for this agent
-                    if self.total_searches > 0:
-                        avg_precision = self.cum_precision / self.total_searches
-                        avg_recall = self.cum_recall / self.total_searches
-                        logging.info(f"--- AGENT {self.id_agent} FINAL METRICS ---")
-                        logging.info(f"Avg Precision: {avg_precision:.4f} | Avg Recall: {avg_recall:.4f}")
+                    # print the p50, p95 and p99 of the insertion, search and modification times
+                    logging.info(f"--- AGENT {self.id_agent} TIMING METRICS ---")
 
-                    # Convert nanoseconds to milliseconds for easier reading
-                    logging.info(f"Total Insert Time: {self.cum_insertion_time / 1_000_000:.2f} ms")
-                    logging.info(f"Total Search Time: {self.cum_search_time / 1_000_000:.2f} ms")
-                    logging.info(f"Total Touch Time:  {self.cum_modif_time / 1_000_000:.2f} ms")
-                    logging.info("Successfully finished all operations.")
+                    if len(self.insertion_times) > 0:
+                        p50 = float(np.percentile(self.insertion_times, 50))
+                        p95 = float(np.percentile(self.insertion_times, 95))
+                        p99 = float(np.percentile(self.insertion_times, 99))
+                        logging.info(f"Insertion Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
+
+                    if len(self.search_times) > 0:
+                        p50 = float(np.percentile(self.search_times, 50))
+                        p95 = float(np.percentile(self.search_times, 95))
+                        p99 = float(np.percentile(self.search_times, 99))
+                        logging.info(f"Search Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
+
+                    if len(self.modification_times) > 0:
+                        p50 = float(np.percentile(self.modification_times, 50))
+                        p95 = float(np.percentile(self.modification_times, 95))
+                        p99 = float(np.percentile(self.modification_times, 99))
+                        logging.info(
+                            f"Modification Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
+
+                    if len(self.log_times) > 0:
+                        p50 = float(np.percentile(self.log_times, 50))
+                        p95 = float(np.percentile(self.log_times, 95))
+                        p99 = float(np.percentile(self.log_times, 99))
+                        logging.info(
+                            f"Log Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
 
                     logging.info("Successfully finished all operations.")
         except Exception as e:
-            # exc_info=True automatically prints the full traceback in the log!
-            logging.error(f"Agent crashed while processing seq {memory.get('seq')}", exc_info=True)
+            logging.exception("Agent crashed at seq %s", seq)
+            raise
 
         finally:
             self.cursor.close()
