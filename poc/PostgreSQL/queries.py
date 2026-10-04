@@ -1,7 +1,7 @@
 append_database_insert_operation = """
     INSERT INTO traces (
         seq, op, agent, id_operation, kind_memory, type_memory, 
-        importance_memory, created_at, last_accessed_at, derived_from, memory_text, qvec, embedding
+        importance_memory, sim_t, last_accessed_at, derived_from, memory_text, qvec, embedding
     ) VALUES %s
 """
 
@@ -39,7 +39,7 @@ database_creation = """
         at TIMESTAMP NULL,
         type_memory INTEGER,
         importance_memory INTEGER,
-        created_at TIMESTAMP,
+        sim_t TIMESTAMP,
         last_accessed_at TIMESTAMP,
         derived_from TEXT[],
         memory_text TEXT,
@@ -53,7 +53,7 @@ database_creation = """
 
     CREATE INDEX btree_agent_op_idx ON traces (agent, op);
 
-    CREATE INDEX btree_created_at_idx ON traces (created_at) WHERE created_at IS NOT NULL;
+    CREATE INDEX btree_sim_t_idx ON traces (sim_t) WHERE sim_t IS NOT NULL;
 """
 
 query_fetch_based_on_cosine = """

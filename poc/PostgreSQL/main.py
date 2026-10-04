@@ -1,7 +1,11 @@
 import json
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import psycopg2
+
+from poc.PostgreSQL.agent_logic import Agent
 from queries import *
 from agent_logic import Agent
 
@@ -11,9 +15,10 @@ class TypeOfDataNotFound(Exception):
 current_folder = Path(__file__).resolve().parent
 parent_folder = current_folder.parent
 
-TRACE_PATH = parent_folder / "trace.jsonl"
+TRACE_PATH = parent_folder / "data/trace.jsonl"
 
-NUMBER_OF_AGENTS = 2
+NUMBER_OF_AGENTS = 100
+MAX_THREADS = 16
 
 def agent_do_work(id_agent: int):
     print(f"hello from agent {id_agent}")
@@ -41,23 +46,26 @@ def initial_setup_agents_seed():
 
 
     # Read JSONL into a DataFrame
+    agent_memories = defaultdict(list)
     with open(TRACE_PATH, "r") as f:
-        trace = [json.loads(l) for l in f]
+        for line in f:
+            item = json.loads(line)
+            agent = item["agent"]
+            agent_memories[agent].append(item)
 
-    threads = []
+    agents = []
     for agent_num in range(1, NUMBER_OF_AGENTS + 1):
-        agent_string_id = f"a{agent_num}"
+        agent_string_id = f"a{agent_num:03d}"
 
-        agent_data_list = [item for item in trace if item.get('agent') == agent_string_id]
-
+        agent_data_list = agent_memories.pop(agent_string_id, [])
+        print(f"agent: {agent_string_id}, with mems: {len(agent_data_list)}")
         t = Agent(agent_num, agent_data_list)
-        threads.append(t)
+        agents.append(t)
 
-    for t in threads:
-        t.start()
 
-    for t in threads:
-        t.join()
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+        for agent in agents:
+            executor.submit(agent.run)
 
 
 if __name__ == "__main__":

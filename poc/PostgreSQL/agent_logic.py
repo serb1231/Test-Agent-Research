@@ -17,7 +17,7 @@ import math
 current_folder = Path(__file__).resolve().parent
 parent_folder = current_folder.parent
 
-VECTORS_PATH = parent_folder / "vectors.npy"
+VECTORS_PATH = parent_folder / "data/vectors.npy"
 
 def list_for_insertion(item, vector):
     return (
@@ -28,8 +28,8 @@ def list_for_insertion(item, vector):
         item["kind"],
         item["type"],
         item["importance"],
-        item["created_at"],
-        item["created_at"], # last_accessed_at is the same as created for a new memory
+        item["sim_t"],
+        item["sim_t"], # last_accessed_at is the same as created for a new memory
         item.get("derived_from", []),
         item["text"],
         item.get("vec"),
@@ -96,10 +96,9 @@ def precision_5(entries, g_t):
 
     return precision_top_5
 
-class Agent(threading.Thread):
+class Agent:
     # data generated is only the one that belongs to this agent
     def __init__(self, id_agent: int, data_generated):
-        super().__init__()
         self.cursor = None
         self.connection = None
         self.id_agent = id_agent
@@ -121,7 +120,7 @@ class Agent(threading.Thread):
         self.cum_mrr = 0.0
 
     def run(self):
-        vectors : npt.NDArray[np.float32] = np.load(VECTORS_PATH)
+        vectors : npt.NDArray[np.float32] = np.load(VECTORS_PATH, mmap_mode='r')
         logging.info("Started processing operations.")
         # start the connection in the run methods
         self.connection = psycopg2.connect(host="localhost", dbname="postgres", user="postgres", password="password")
@@ -201,7 +200,7 @@ class Agent(threading.Thread):
                         # memory["ids"] = "ids": ["a1_t2_2", "a1_t1_1", "a1_t0_2", "a1_t1_3", "a1_seed_2"]
                         ids_tuple = tuple(memory["ids"])
                         start = time.perf_counter_ns()
-                        self.cursor.execute(query_modify_time, (memory["at"], ids_tuple))
+                        self.cursor.execute(query_modify_time, (memory["sim_t"], ids_tuple))
                         self.modification_times = np.append(self.modification_times, time.perf_counter_ns() - start)
 
                     else:
