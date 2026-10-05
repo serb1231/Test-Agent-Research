@@ -1,4 +1,5 @@
 append_database_insert_operation = """
+    EXPLAIN (ANALYZE, BUFFERS)
     INSERT INTO traces (
         seq, op, agent, id_operation, kind_memory, type_memory, 
         importance_memory, sim_t, last_accessed_at, derived_from, memory_text, qvec, embedding
@@ -6,6 +7,7 @@ append_database_insert_operation = """
 """
 
 append_database_search_operation = """
+    EXPLAIN (ANALYZE, BUFFERS)
     INSERT INTO traces (
         seq, op, agent, kind_memory, trigger, filter, 
         qvec, k, k_prime, sim_time, pool, composite_top
@@ -13,6 +15,7 @@ append_database_search_operation = """
 """
 
 append_database_touch_operation = """
+EXPLAIN (ANALYZE, BUFFERS)
     INSERT INTO traces (
         seq, op, agent, kind_memory, ids, at
     ) VALUES %s
@@ -58,10 +61,10 @@ database_creation = """
 
 query_fetch_based_on_cosine = """
 WITH r as MATERIALIZED(
-    SELECT id_operation, memory_text, 1 - (embedding <=> %s::vector) AS similarity
+    EXPLAIN SELECT id_operation, memory_text, 1 - (embedding <=> %s::vector) AS similarity
     FROM traces
     WHERE embedding is NOT NULL AND op = 'insert' AND agent = %s
     ORDER BY embedding <=> %s::vector
     LIMIT %s)
-select * from r order by similarity;
+EXPLAIN select * from r order by similarity DESC;
 """

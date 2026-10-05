@@ -59,7 +59,7 @@ def list_for_touch(item):
         item["agent"],
         item["kind"],
         item.get("ids", []),
-        item.get("at")
+        item.get("at", item["sim_t"])
     )
 
 
@@ -89,9 +89,9 @@ def overlap(entries, g_t):
 
 # Precision @5
 def precision_5(entries, g_t):
-    top_5_ground_truth = set(entry["id"] for entry in entries[:5])
-    top_5_retrieved = set(entry["id"] for entry in g_t["pool"][:5])
-    correct_entries = len(top_5_ground_truth.intersection(top_5_retrieved))
+    top_5_retrieved = set(entry["id"] for entry in entries[:5])
+    top_5_ground_truth = set(entry["id"] for entry in g_t["pool"][:5])
+    correct_entries = len(top_5_retrieved.intersection(top_5_ground_truth))
     precision_top_5 = correct_entries / 5.0
 
     return precision_top_5
@@ -103,14 +103,14 @@ class Agent:
         self.connection = None
         self.id_agent = id_agent
         self.entries_list = data_generated
-        logging.info(f"Initialized with {len(self.entries_list)} operations to process.")
+        logging.info(f"Agent {id_agent}: initialized with {len(self.entries_list)} operations to process.")
         # self.cum_insertion_time = 0
         # self.cum_modif_time = 0
         # self.cum_search_time = 0
-        self.insertion_times : np.ndarray[tuple[int]] = np.array([])
-        self.log_times: np.ndarray[tuple[int]] = np.array([])
-        self.modification_times : np.ndarray[tuple[int]] = np.array([])
-        self.search_times : np.ndarray[tuple[int]] = np.array([])
+        self.insertion_times: list[int] = []
+        self.log_times: list[int] = []
+        self.modification_times: list[int] = []
+        self.search_times: list[int] = []
 
         # metrics for searching database
         self.total_searches = 0
@@ -121,10 +121,11 @@ class Agent:
 
     def run(self):
         vectors : npt.NDArray[np.float32] = np.load(VECTORS_PATH, mmap_mode='r')
-        logging.info("Started processing operations.")
+        logging.info(f"Agent {self.id_agent}: started processing operations.")
         # start the connection in the run methods
         self.connection = psycopg2.connect(host="localhost", dbname="postgres", user="postgres", password="password")
         self.cursor = self.connection.cursor()
+        seq = None
         try:
             self.connection.autocommit = True
             register_vector(self.connection)
@@ -139,20 +140,20 @@ class Agent:
                         insrt = list_for_insertion(memory, vectors[int(memory["vec"])].tolist())
                         start = time.perf_counter_ns()
                         execute_values(self.cursor, append_database_insert_operation, [insrt])
-                        self.insertion_times = np.append(self.insertion_times, time.perf_counter_ns() - start)
+                        self.insertion_times.append(time.perf_counter_ns() - start)
 
                     elif memory["op"] == "search":
                         logging.debug(f"Executing SEARCH for seq {seq}")
                         insrt = list_for_search(memory)
                         start = time.perf_counter_ns()
                         execute_values(self.cursor, append_database_search_operation, [insrt])
-                        self.log_times = np.append(self.log_times, time.perf_counter_ns() - start)
+                        self.log_times.append(time.perf_counter_ns() - start)
                         # get the vector of the trigger
                         embedding_of_trigger = vectors[int(memory["qvec"])].tolist()
 
                         start = time.perf_counter_ns()
                         self.cursor.execute(query_fetch_based_on_cosine, (embedding_of_trigger, memory["agent"], embedding_of_trigger, int(memory["k_prime"])))
-                        self.search_times = np.append(self.search_times, time.perf_counter_ns() - start)
+                        self.search_times.append(time.perf_counter_ns() - start)
 
                         raw_results: list[tuple[Any, ...]] = self.cursor.fetchall()
                         formatted_results = []
@@ -187,7 +188,7 @@ class Agent:
                         insrt = list_for_touch(memory)
                         start = time.perf_counter_ns()
                         execute_values(self.cursor, append_database_touch_operation, [insrt])
-                        self.log_times = np.append(self.log_times, time.perf_counter_ns() - start)
+                        self.log_times.append(time.perf_counter_ns() - start)
                         # using the k most important ones, modify in database their timestamp (id index)
                         # record metrics for the writing to database (compute metrics)
 
@@ -201,7 +202,7 @@ class Agent:
                         ids_tuple = tuple(memory["ids"])
                         start = time.perf_counter_ns()
                         self.cursor.execute(query_modify_time, (memory["sim_t"], ids_tuple))
-                        self.modification_times = np.append(self.modification_times, time.perf_counter_ns() - start)
+                        self.modification_times.append(time.perf_counter_ns() - start)
 
                     else:
                         logging.warning(f"Skipping unknown operation: {memory['op']}")
@@ -217,40 +218,23 @@ class Agent:
                     logging.info(f"Avg Precision 5K: {avg_precision_5k:.4f}")
                     logging.info(f"Avg Normalized Discounted Cummulative Gain: {avg_ndcg:.4f}")
 
-                    # print the p50, p95 and p99 of the insertion, search and modification times
-                    logging.info(f"--- AGENT {self.id_agent} TIMING METRICS ---")
-
-                    # print the p50, p95 and p99 of the insertion, search and modification times
-                    logging.info(f"--- AGENT {self.id_agent} TIMING METRICS ---")
-
-                    if len(self.insertion_times) > 0:
-                        p50 = float(np.percentile(self.insertion_times, 50))
-                        p95 = float(np.percentile(self.insertion_times, 95))
-                        p99 = float(np.percentile(self.insertion_times, 99))
-                        logging.info(f"Insertion Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
-
-                    if len(self.search_times) > 0:
-                        p50 = float(np.percentile(self.search_times, 50))
-                        p95 = float(np.percentile(self.search_times, 95))
-                        p99 = float(np.percentile(self.search_times, 99))
-                        logging.info(f"Search Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
-
-                    if len(self.modification_times) > 0:
-                        p50 = float(np.percentile(self.modification_times, 50))
-                        p95 = float(np.percentile(self.modification_times, 95))
-                        p99 = float(np.percentile(self.modification_times, 99))
+                # print the p50, p95 and p99 of the insertion, search and modification times
+                logging.info(f"--- AGENT {self.id_agent} TIMING METRICS ---")
+                for label, samples in (
+                    ("Insertion", self.insertion_times),
+                    ("Search", self.search_times),
+                    ("Modification", self.modification_times),
+                    ("Log", self.log_times),
+                ):
+                    if samples:
+                        p50 = float(np.percentile(samples, 50))
+                        p95 = float(np.percentile(samples, 95))
+                        p99 = float(np.percentile(samples, 99))
                         logging.info(
-                            f"Modification Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
+                            f"{label} Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
 
-                    if len(self.log_times) > 0:
-                        p50 = float(np.percentile(self.log_times, 50))
-                        p95 = float(np.percentile(self.log_times, 95))
-                        p99 = float(np.percentile(self.log_times, 99))
-                        logging.info(
-                            f"Log Times p50 (ns): {p50:.2f}, p95 (ns): {p95:.2f}, p99 (ns): {p99:.2f}")
-
-                    logging.info("Successfully finished all operations.")
-        except Exception as e:
+                logging.info("Successfully finished all operations.")
+        except Exception:
             logging.exception("Agent crashed at seq %s", seq)
             raise
 
