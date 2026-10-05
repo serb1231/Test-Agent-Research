@@ -130,7 +130,17 @@ class Agent:
             self.connection.autocommit = True
             register_vector(self.connection)
             with self.cursor:
-                # setting this will do good to the combination of vector cosine and B-Tree
+                # Kept so that the HNSW path is a *usable* option for the planner,
+                # not so that it gets used. pgvector cannot filter inside the index:
+                # a one-shot ef_search=40 returns the global top ~40 and then
+                # rechecks `agent` on the heap, which leaves ~0.2 of the 20 rows
+                # asked for. relaxed_order makes it retry until k rows survive.
+                # The planner still prefers btree_agent_op_idx plus an exact
+                # top-N sort for an `agent = ?` filter this selective -- check
+                # pg_stat_user_indexes after a run, hnsw_embedding_idx stays at 0
+                # scans. That is PG choosing, and the Qdrant side is now
+                # configured to choose for itself too (see
+                # ../Qdrant/collections_config.py).
                 self.cursor.execute("SET hnsw.iterative_scan = relaxed_order;")
                 for memory in self.entries_list:
                     seq = memory.get('seq')

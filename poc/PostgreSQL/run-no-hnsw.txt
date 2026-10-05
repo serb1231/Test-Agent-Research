@@ -1,0 +1,16 @@
+2026-10-05 11:13:05,587 - [MainThread] - INFO - ====================================================================
+2026-10-05 11:13:05,587 - [MainThread] - INFO - RUN SUMMARY -- PostgreSQL
+2026-10-05 11:13:05,587 - [MainThread] - INFO - ====================================================================
+2026-10-05 11:13:05,587 - [MainThread] - INFO - 100 agents over 16 threads, 329018 ops in 548.1s (600 ops/s)
+2026-10-05 11:13:05,587 - [MainThread] - INFO - --- PostgreSQL latency, pooled over all agents (ms) ---
+2026-10-05 11:13:05,587 - [MainThread] - INFO - op                    n      mean       p50       p95       p99     ops/s
+2026-10-05 11:13:05,587 - [MainThread] - INFO - insertion         95406    23.477    17.977    51.421    77.204       174
+2026-10-05 11:13:05,587 - [MainThread] - INFO - search            58403    22.703    19.479    45.323    66.148       107
+2026-10-05 11:13:05,587 - [MainThread] - INFO - modification      58403    15.628     9.942    44.397    70.661       107
+2026-10-05 11:13:05,587 - [MainThread] - INFO - log              116806    13.506     8.519    37.904    60.867       213
+2026-10-05 11:13:05,587 - [MainThread] - INFO - --- PostgreSQL retrieval quality over 58403 searches ---
+2026-10-05 11:13:05,587 - [MainThread] - INFO - overlap           1.0000   (per-agent min 1.0000 / median 1.0000 / max 1.0000)
+2026-10-05 11:13:05,587 - [MainThread] - INFO - precision_at_5    1.0000   (per-agent min 0.9997 / median 1.0000 / max 1.0000)
+2026-10-05 11:13:05,588 - [MainThread] - INFO - ndcg              1.0000   (per-agent min 1.0000 / median 1.0000 / max 1.0000)
+2026-10-05 11:13:05,588 - [MainThread] - INFO - ====================================================================
+2026-10-05 11:13:05,588 - [MainThread] - INFO - summary written to /home/serb1231/Desktop/Test-Agent-Research/poc/results/postgresql.json

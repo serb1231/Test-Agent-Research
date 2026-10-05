@@ -14,30 +14,43 @@ OPS_COLLECTION = "trace_ops"
 
 VECTOR_SIZE = 1536
 
-# same HNSW build parameters as the PG index, so the two are comparable:
+# Build parameters match the PG index, and that is the whole of what is pinned:
 #   CREATE INDEX ... USING hnsw (...) WITH (m = 16, ef_construction = 64)
 #
-# full_scan_threshold matters as much as m/ef_construct here. Qdrant decides per
-# query whether to walk the graph or to brute-force the filtered subset, and the
-# default threshold is 10000 KB. Every search in the trace is filtered down to a
-# single agent, which is ~954 vectors * 6 KB = ~5700 KB, i.e. under the default.
-# Left alone, every search would run exact and the graph would never be touched,
-# so the m/ef_construct numbers above would be measuring nothing. 10 KB is the
-# lowest the server accepts, and it keeps the graph on the hot path, which is what
-# the PG side builds its index for.
-HNSW_CONFIG = models.HnswConfigDiff(m=16, ef_construct=64, full_scan_threshold=10)
+# Everything else is left at Qdrant's defaults deliberately. The point is to let
+# each engine pick its own access path, because that is what the PG side does.
+#
+# full_scan_threshold is Qdrant's query planner: a filtered subset smaller than
+# the threshold is brute-forced, a larger one goes through the graph. It used to
+# be pinned to 10 KB here to keep the graph on the hot path, on the theory that
+# the PG side was using its HNSW index. It was not -- across a full run
+# pg_stat_user_indexes reports 58,443 scans of btree_agent_op_idx and 0 of
+# hnsw_embedding_idx, because `agent = ?` selects ~1% of the table and PG's
+# planner costs a btree scan plus an exact top-N sort as cheaper than an index
+# pgvector cannot filter inside. Qdrant's default (10000 KB) reaches the same
+# verdict on the same data: ~960 vectors * 6 KB = ~5760 KB is under it, so the
+# filtered subset is scanned exactly. Both planners now choose, and both choose
+# exact, so the quality numbers measure the engine instead of this override.
+HNSW_CONFIG = models.HnswConfigDiff(m=16, ef_construct=64)
 
-# Same story one level up: a segment only gets an HNSW index once its vector data
-# passes indexing_threshold (default 20000 KB), and until then search is a plain
-# scan. The run inserts and searches interleaved, so the default would have the
-# early searches exact and the later ones indexed -- a latency distribution that
-# is a blend of two algorithms and comparable to nothing. 1 KB starts the
-# optimizer immediately. (0 would mean "never index", not "always".)
-OPTIMIZERS_CONFIG = models.OptimizersConfigDiff(indexing_threshold=1)
+# Same reasoning one level up. indexing_threshold was pinned to 1 KB to start the
+# optimizer immediately; at its default (10000 KB) the graph is still built, since
+# the collection is ~586 MB, just on Qdrant's own schedule. None here means "send
+# no optimizers_config at all".
+OPTIMIZERS_CONFIG = None
 
-# pgvector's hnsw.ef_search defaults to 40 and the PG side never overrides it, so
-# the Qdrant searches are pinned to the same beam width instead of its default.
-SEARCH_PARAMS = models.SearchParams(hnsw_ef=40)
+# No search params either. Pinning hnsw_ef=40 to mirror pgvector's ef_search
+# default only equalises anything if PG actually walks its graph, and it does not.
+# Measured on a 24k-point replica of this workload, hnsw_ef=40 scored recall@20
+# 0.9930 where Qdrant's own default scored 0.9995 -- so the pin was a handicap,
+# not a control.
+#
+# Worth knowing if these are ever compared graph-to-graph: the two filtered-ANN
+# algorithms cannot be made equivalent. pgvector searches a global graph, applies
+# the filter afterwards on the heap, and (with hnsw.iterative_scan) retries until
+# k rows survive; Qdrant traverses a filter-aware graph in one pass. Equal m and
+# ef_construct does not make those the same search.
+SEARCH_PARAMS = None
 
 VECTORS_CONFIG = models.VectorParams(
     size=VECTOR_SIZE,
@@ -117,11 +130,14 @@ def create_collections(client):
         if client.collection_exists(collection):
             client.delete_collection(collection)
 
+    create_kwargs = {}
+    if OPTIMIZERS_CONFIG is not None:
+        create_kwargs["optimizers_config"] = OPTIMIZERS_CONFIG
     client.create_collection(
         collection_name=MEMORIES_COLLECTION,
         vectors_config=VECTORS_CONFIG,
         hnsw_config=HNSW_CONFIG,
-        optimizers_config=OPTIMIZERS_CONFIG,
+        **create_kwargs,
     )
     # the two payload indexes that back agent_filter() and ids_filter(),
     # standing in for the PG btree on (agent, op) and the UNIQUE id_operation

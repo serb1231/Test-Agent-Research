@@ -1,0 +1,57 @@
+/home/serb1231/anaconda3/envs/test-agent-research/bin/python /home/serb1231/Desktop/Test-Agent-Research/poc/compare_results.py
+
+                                  Qdrant    PostgreSQL     ratio
+----------------------------------------------------------------
+
+run
+agents                               100           100
+total ops                         329018        329018
+wall clock (s)                     707.4         548.1     1.29x
+ops/s                                465           600     0.77x
+
+mean latency (ms)
+insertion                         39.313        23.477     1.67x
+search                            23.801        22.703     1.05x
+modification                      39.967        15.628     2.56x
+log                               27.554        13.506     2.04x
+
+p50 latency (ms)
+insertion                         27.425        17.977     1.53x
+search                            20.220        19.479     1.04x
+modification                      26.587         9.942     2.67x
+log                               21.313         8.519     2.50x
+
+p95 latency (ms)
+insertion                         97.670        51.421     1.90x
+search                            48.195        45.323     1.06x
+modification                      96.689        44.397     2.18x
+log                               58.623        37.904     1.55x
+
+p99 latency (ms)
+insertion                        200.144        77.204     2.59x
+search                            98.158        66.148     1.48x
+modification                     208.708        70.661     2.95x
+log                              114.622        60.867     1.88x
+
+throughput by op (ops/s)
+insertion                            135           174     0.77x
+search                                83           107     0.77x
+modification                          83           107     0.77x
+log                                  165           213     0.77x
+
+retrieval quality (micro-averaged over all searches)
+searches                           58403         58403
+overlap                           1.0000        1.0000     1.00x
+precision_at_5                    1.0000        1.0000     1.00x
+ndcg                              1.0000        1.0000     1.00x
+
+per-agent spread (min / median / max)
+  overlap         Qdrant      1.0000 / 1.0000 / 1.0000
+  overlap         PostgreSQL  1.0000 / 1.0000 / 1.0000
+  precision_at_5  Qdrant      1.0000 / 1.0000 / 1.0000
+  precision_at_5  PostgreSQL  0.9997 / 1.0000 / 1.0000
+  ndcg            Qdrant      1.0000 / 1.0000 / 1.0000
+  ndcg            PostgreSQL  1.0000 / 1.0000 / 1.0000
+
+
+Process finished with exit code 0

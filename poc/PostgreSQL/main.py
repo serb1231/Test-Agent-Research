@@ -21,7 +21,7 @@ from  benchmark_report import log_summary, summarise, write_report  # noqa: E402
 TRACE_PATH = parent_folder / "data/trace.jsonl"
 REPORT_PATH = parent_folder / "results/postgresql.json"
 
-NUMBER_OF_AGENTS = 16
+NUMBER_OF_AGENTS = 100
 MAX_THREADS = 16
 
 import logging
