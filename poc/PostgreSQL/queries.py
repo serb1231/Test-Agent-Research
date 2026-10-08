@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+
+# hnsw_config lives in poc/, one level up, and is the single source of truth for
+# the build parameters this DDL and ../Qdrant/collections_config.py share.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hnsw_config import EF_CONSTRUCTION, M  # noqa: E402
+
 append_database_insert_operation = """
     INSERT INTO traces (
         seq, op, agent, id_operation, kind_memory, type_memory, 
@@ -48,13 +56,13 @@ database_creation = """
 
     CREATE INDEX hnsw_embedding_idx ON traces 
     USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64)
+    WITH (m = {m}, ef_construction = {ef_construction})
     WHERE embedding IS NOT NULL;
 
     CREATE INDEX btree_agent_op_idx ON traces (agent, op);
 
     CREATE INDEX btree_sim_t_idx ON traces (sim_t) WHERE sim_t IS NOT NULL;
-"""
+""".format(m=M, ef_construction=EF_CONSTRUCTION)
 
 query_fetch_based_on_cosine = """
 WITH r as MATERIALIZED(

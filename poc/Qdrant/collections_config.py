@@ -1,4 +1,20 @@
+import sys
+from pathlib import Path
+
 from qdrant_client import models
+
+# hnsw_config lives in poc/, one level up, and is the single source of truth for
+# the parameters this file and ../PostgreSQL/queries.py share.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hnsw_config import (  # noqa: E402
+    EF_CONSTRUCTION,
+    EF_SEARCH,
+    FORCE_HNSW,
+    M,
+    QDRANT_EXACT,
+    QDRANT_FULL_SCAN_THRESHOLD_KB,
+    QDRANT_INDEXING_THRESHOLD_KB,
+)
 
 # Mirrors the PostgreSQL schema in ../PostgreSQL/queries.py.
 #
@@ -14,43 +30,54 @@ OPS_COLLECTION = "trace_ops"
 
 VECTOR_SIZE = 1536
 
-# Build parameters match the PG index, and that is the whole of what is pinned:
-#   CREATE INDEX ... USING hnsw (...) WITH (m = 16, ef_construction = 64)
+# Build parameters come from ../hnsw_config.py, the same module the PG DDL reads,
+# so `m` and `ef_construct` here cannot drift from `m` and `ef_construction` there.
 #
-# Everything else is left at Qdrant's defaults deliberately. The point is to let
-# each engine pick its own access path, because that is what the PG side does.
-#
-# full_scan_threshold is Qdrant's query planner: a filtered subset smaller than
-# the threshold is brute-forced, a larger one goes through the graph. It used to
-# be pinned to 10 KB here to keep the graph on the hot path, on the theory that
-# the PG side was using its HNSW index. It was not -- across a full run
-# pg_stat_user_indexes reports 58,443 scans of btree_agent_op_idx and 0 of
-# hnsw_embedding_idx, because `agent = ?` selects ~1% of the table and PG's
-# planner costs a btree scan plus an exact top-N sort as cheaper than an index
-# pgvector cannot filter inside. Qdrant's default (10000 KB) reaches the same
-# verdict on the same data: ~960 vectors * 6 KB = ~5760 KB is under it, so the
-# filtered subset is scanned exactly. Both planners now choose, and both choose
-# exact, so the quality numbers measure the engine instead of this override.
-HNSW_CONFIG = models.HnswConfigDiff(m=16, ef_construct=64)
+# full_scan_threshold is Qdrant's query planner, measured in KB of vectors: a
+# filtered subset smaller than the threshold is brute-forced, a larger one goes
+# through the graph. One agent is ~960 points * 6 KB = ~5,760 KB, which sits under
+# the 10,000 KB default -- that is the entire reason the baseline run came back
+# exact (results-no-hnsw/), matching PG, whose planner reached the same verdict
+# from the other direction. Dropping the threshold to Qdrant's minimum of 10 KB
+# puts every filtered subset ~570x above the line, so the graph is always on the
+# hot path.
+HNSW_CONFIG = models.HnswConfigDiff(
+    m=M,
+    ef_construct=EF_CONSTRUCTION,
+    **(
+        {"full_scan_threshold": QDRANT_FULL_SCAN_THRESHOLD_KB}
+        if FORCE_HNSW
+        else {}
+    ),
+)
 
-# Same reasoning one level up. indexing_threshold was pinned to 1 KB to start the
-# optimizer immediately; at its default (10000 KB) the graph is still built, since
-# the collection is ~586 MB, just on Qdrant's own schedule. None here means "send
-# no optimizers_config at all".
-OPTIMIZERS_CONFIG = None
-
-# No search params either. Pinning hnsw_ef=40 to mirror pgvector's ef_search
-# default only equalises anything if PG actually walks its graph, and it does not.
-# Measured on a 24k-point replica of this workload, hnsw_ef=40 scored recall@20
-# 0.9930 where Qdrant's own default scored 0.9995 -- so the pin was a handicap,
-# not a control.
+# The second gate, and the one that is easy to miss: a segment holding less than
+# indexing_threshold KB has no HNSW graph built for it at all, so searches over it
+# are exact however full_scan_threshold is set. At the 10,000 KB default the graph
+# does get built eventually -- the collection is ~586 MB -- but on Qdrant's own
+# schedule, which in an interleaved insert/search trace means a long opening
+# stretch of brute-force searches. 1 KB starts the optimizer on the first points.
 #
-# Worth knowing if these are ever compared graph-to-graph: the two filtered-ANN
-# algorithms cannot be made equivalent. pgvector searches a global graph, applies
-# the filter afterwards on the heap, and (with hnsw.iterative_scan) retries until
-# k rows survive; Qdrant traverses a filter-aware graph in one pass. Equal m and
-# ef_construct does not make those the same search.
-SEARCH_PARAMS = None
+# None means "send no optimizers_config at all", i.e. keep Qdrant's defaults.
+OPTIMIZERS_CONFIG = (
+    models.OptimizersConfigDiff(indexing_threshold=QDRANT_INDEXING_THRESHOLD_KB)
+    if FORCE_HNSW
+    else None
+)
+
+# hnsw_ef is the analogue of pgvector's hnsw.ef_search and is pinned to the same
+# EF_SEARCH. exact=False is belt and braces: it forbids the exact fallback at
+# query time, so if a threshold above is ever misconfigured the result is a worse
+# recall number rather than a silent brute-force search wearing an ANN label.
+#
+# Note this is a genuine handicap relative to letting Qdrant choose: measured on a
+# 24k-point replica of this workload, hnsw_ef=40 scored recall@20 0.9930 where
+# Qdrant's own default scored 0.9995. That is the price of a graph-to-graph
+# comparison, not a bug -- and the two filtered-ANN algorithms still are not
+# equivalent (see the caveat at the foot of ../hnsw_config.py).
+SEARCH_PARAMS = (
+    models.SearchParams(hnsw_ef=EF_SEARCH, exact=QDRANT_EXACT) if FORCE_HNSW else None
+)
 
 VECTORS_CONFIG = models.VectorParams(
     size=VECTOR_SIZE,

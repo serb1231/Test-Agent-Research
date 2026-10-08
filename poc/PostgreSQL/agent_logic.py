@@ -9,7 +9,14 @@ import json
 from psycopg2.extras import execute_values
 from pgvector.psycopg2 import register_vector
 
-from queries import *
+from queries import *  # also puts poc/ on sys.path, for hnsw_config below
+from hnsw_config import (
+    EF_SEARCH,
+    FORCE_HNSW,
+    PG_DISABLE_SORT,
+    PG_ITERATIVE_SCAN,
+    PG_MAX_SCAN_TUPLES,
+)
 import numpy as np
 import numpy.typing as npt
 import math
@@ -96,6 +103,31 @@ def precision_5(entries, g_t):
 
     return precision_top_5
 
+def session_settings():
+    """The GUCs every agent connection opens with.
+
+    `hnsw.*` only ever makes the graph a usable option; what actually decides
+    whether it gets walked is enable_sort. With sorting available the planner
+    costs `Index Scan using btree_agent_op_idx` + a top-N heapsort as cheaper
+    than an index pgvector cannot filter inside, and takes it -- check
+    pg_stat_user_indexes after a baseline run, hnsw_embedding_idx stays at 0
+    scans. Taking Sort away leaves the HNSW scan as the only node that can
+    produce `ORDER BY embedding <=> q` ordering, so the graph is the only plan
+    left. Schema and indexes are untouched either way, so the two runs differ in
+    access path and nothing else.
+
+    See ../hnsw_config.py for why each value is what it is.
+    """
+    settings = [
+        f"SET hnsw.iterative_scan = {PG_ITERATIVE_SCAN};",
+        f"SET hnsw.ef_search = {EF_SEARCH};",
+        f"SET hnsw.max_scan_tuples = {PG_MAX_SCAN_TUPLES};",
+    ]
+    if FORCE_HNSW and PG_DISABLE_SORT:
+        settings.append("SET enable_sort = off;")
+    return settings
+
+
 class Agent:
     # data generated is only the one that belongs to this agent
     def __init__(self, id_agent: int, data_generated):
@@ -130,18 +162,8 @@ class Agent:
             self.connection.autocommit = True
             register_vector(self.connection)
             with self.cursor:
-                # Kept so that the HNSW path is a *usable* option for the planner,
-                # not so that it gets used. pgvector cannot filter inside the index:
-                # a one-shot ef_search=40 returns the global top ~40 and then
-                # rechecks `agent` on the heap, which leaves ~0.2 of the 20 rows
-                # asked for. relaxed_order makes it retry until k rows survive.
-                # The planner still prefers btree_agent_op_idx plus an exact
-                # top-N sort for an `agent = ?` filter this selective -- check
-                # pg_stat_user_indexes after a run, hnsw_embedding_idx stays at 0
-                # scans. That is PG choosing, and the Qdrant side is now
-                # configured to choose for itself too (see
-                # ../Qdrant/collections_config.py).
-                self.cursor.execute("SET hnsw.iterative_scan = relaxed_order;")
+                for statement in session_settings():
+                    self.cursor.execute(statement)
                 for memory in self.entries_list:
                     seq = memory.get('seq')
                     if memory["op"] == "insert":

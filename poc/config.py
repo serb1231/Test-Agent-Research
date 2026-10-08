@@ -27,6 +27,6 @@ REFLECT_QUESTIONS = 2
 REFLECT_K = 5  # candidates kept per reflection question, after rescoring
 
 CHROMA_PATH = "./chroma_db_replay"
-TRACE_PATH = "./trace.jsonl"
-VECTORS_PATH = "./vectors.npy"
+TRACE_PATH = "./data/trace.jsonl"
+VECTORS_PATH = "./data/vectors.npy"
 REPLAY_METRICS_PATH = "./replay_metrics.jsonl"
