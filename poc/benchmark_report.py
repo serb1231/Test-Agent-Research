@@ -1,10 +1,4 @@
 """Run-level aggregation shared by the PostgreSQL and Qdrant benchmarks.
-
-Both Agent classes already collect the same four timing lists and the same
-cumulative quality sums, so the aggregation lives here once. Keeping a single
-implementation is the point: if the two engines summarised their numbers with
-even slightly different definitions, the comparison would be meaningless.
-
 Imported by each main.py, which sits one directory below this file.
 """
 
@@ -16,9 +10,7 @@ import numpy as np
 
 NS_PER_MS = 1_000_000
 
-# (label, Agent attribute). The four phases are timed separately because they
-# cost very different things: a vector write, an ANN read, a payload/row update,
-# and the audit-log write that both engines pay on every search and touch.
+# time, insertions, searches, modifications and logs
 TIMING_SERIES = (
     ("insertion", "insertion_times"),
     ("search", "search_times"),
@@ -28,11 +20,8 @@ TIMING_SERIES = (
 
 
 def _latency_stats(samples_ns):
-    """Percentiles over the pooled samples of every agent.
-
-    Pooling the raw samples is the only correct way to do this. Averaging each
-    agent's p95 would produce a number that is not a percentile of anything --
-    the mean of 100 tail estimates is not the tail of the run.
+    """
+    Compute percentile numbers from the data
     """
     if not samples_ns:
         return None
@@ -49,14 +38,9 @@ def _latency_stats(samples_ns):
     }
 
 
+# get precision, overlap, cumulative overlap (over multiple agents)
+# precision for the first 5 entries, NDCG.
 def _quality_stats(agents):
-    """Retrieval quality micro-averaged over every search in the run.
-
-    Micro, not macro: agents do not all issue the same number of searches, so
-    averaging their per-agent averages would weight a 40-search agent the same
-    as a 900-search one. The per-agent spread is reported separately, which says
-    more about consistency than a macro average would anyway.
-    """
     searching = [a for a in agents if a.total_searches > 0]
     total = sum(a.total_searches for a in searching)
     if not total:
@@ -77,14 +61,11 @@ def _quality_stats(agents):
 
 
 def summarise(engine, agents, wall_clock_s, max_threads, failed_agents=()):
-    """Collapse every agent's samples into one comparable record."""
+    """Combine the measured stats"""
     ops = {}
     for label, attr in TIMING_SERIES:
         stats = _latency_stats([t for a in agents for t in getattr(a, attr)])
         if stats is not None:
-            # Throughput is over the whole run, so it reflects what the engine
-            # actually delivered with MAX_THREADS agents competing, not what one
-            # idle client could achieve.
             stats["throughput_per_s"] = stats["count"] / wall_clock_s if wall_clock_s else None
             ops[label] = stats
 
