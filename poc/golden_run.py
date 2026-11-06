@@ -1,8 +1,8 @@
 """Phase 1 — the golden run (article §01, §05). Runs the agent simulation
 ONCE, driven by real LLM calls, against NumpyReference (exact, no
-approximation). Every operation is logged to trace.jsonl; every vector
+approximation). Every operation is logged to data/trace.jsonl; every vector
 (memory content AND query vectors) is assigned a integer index and appended
-to a shared array saved as vectors.npy. Search ops additionally record the
+to a shared array saved as data/vectors.npy. Search ops additionally record the
 golden answer inline — the exact candidate pool and the composite-rescored
 top-k — so replay never needs a second ground-truth pass.
 

@@ -5,3 +5,8 @@ poc/.env
 .env
 *.pyc
 poc/chroma_db/
+
+# Qdrant server: the 90 MB binary and the storage it rebuilds on every run
+poc/Qdrant/.qdrant-server/
+*.log
+.idea/

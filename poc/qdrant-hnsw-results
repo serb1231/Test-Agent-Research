@@ -1,0 +1,16 @@
+2026-10-05 22:04:06,972 - [MainThread] - INFO - ====================================================================
+2026-10-05 22:04:06,972 - [MainThread] - INFO - RUN SUMMARY -- Qdrant
+2026-10-05 22:04:06,972 - [MainThread] - INFO - ====================================================================
+2026-10-05 22:04:06,972 - [MainThread] - INFO - 100 agents over 16 threads, 329018 ops in 899.5s (366 ops/s)
+2026-10-05 22:04:06,972 - [MainThread] - INFO - --- Qdrant latency, pooled over all agents (ms) ---
+2026-10-05 22:04:06,972 - [MainThread] - INFO - op                    n      mean       p50       p95       p99     ops/s
+2026-10-05 22:04:06,972 - [MainThread] - INFO - insertion         95406    53.027    36.064   128.010   307.290       106
+2026-10-05 22:04:06,972 - [MainThread] - INFO - search            58403    30.826    21.419    79.317   178.257        65
+2026-10-05 22:04:06,972 - [MainThread] - INFO - modification      58403    54.947    35.901   130.579   306.791        65
+2026-10-05 22:04:06,972 - [MainThread] - INFO - log              116806    30.420    22.431    68.247   168.182       130
+2026-10-05 22:04:06,972 - [MainThread] - INFO - --- Qdrant retrieval quality over 58403 searches ---
+2026-10-05 22:04:06,972 - [MainThread] - INFO - overlap           0.9895   (per-agent min 0.9603 / median 0.9914 / max 1.0000)
+2026-10-05 22:04:06,972 - [MainThread] - INFO - precision_at_5    0.9922   (per-agent min 0.9767 / median 0.9928 / max 1.0000)
+2026-10-05 22:04:06,972 - [MainThread] - INFO - ndcg              0.9952   (per-agent min 0.9854 / median 0.9958 / max 1.0000)
+2026-10-05 22:04:06,972 - [MainThread] - INFO - ====================================================================
+2026-10-05 22:04:06,973 - [MainThread] - INFO - summary written to /home/serb1231/Desktop/Test-Agent-Research/poc/results/qdrant.json
